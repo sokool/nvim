@@ -1,0 +1,267 @@
+local lazypath = vim.fn.stdpath("data") .. "/lazy/lazy.nvim"
+if not vim.uv.fs_stat(lazypath) then
+  vim.fn.system({ "git", "clone", "--filter=blob:none", "https://github.com/folke/lazy.nvim.git", "--branch=stable", lazypath })
+end
+vim.opt.rtp:prepend(lazypath)
+
+local ok_lazy, lazy = pcall(require, "lazy")
+if not ok_lazy then
+  vim.notify("lazy.nvim not installed", vim.log.levels.WARN)
+  return
+end
+
+lazy.setup({
+  {
+    "nvim-neo-tree/neo-tree.nvim",
+    branch = "v3.x",
+    dependencies = { "nvim-lua/plenary.nvim", "nvim-tree/nvim-web-devicons", "MunifTanjim/nui.nvim" },
+    config = function()
+      if not pcall(require, "neo-tree") then
+        vim.notify("neo-tree not installed", vim.log.levels.WARN)
+        return
+      end
+      require("neo-tree").setup({})
+    end,
+  },
+  {
+    "nvim-treesitter/nvim-treesitter",
+    build = ":TSUpdate",
+    opts = {
+      ensure_installed = { "go", "lua", "vim", "vimdoc", "query" },
+      highlight = { enable = true, additional_vim_regex_highlighting = false },
+    },
+    config = function()
+      if not pcall(require, "nvim-treesitter") then
+        vim.notify("nvim-treesitter not installed", vim.log.levels.WARN)
+        return
+      end
+      require("nvim-treesitter").setup(opts)
+    end,
+  },
+  {
+    "neovim/nvim-lspconfig",
+    config = function()
+      -- Enable gopls with default settings
+      vim.lsp.config.gopls = {}
+      vim.lsp.enable("gopls")
+    end,
+  },
+  {
+    "kevinhwang91/nvim-ufo",
+    dependencies = { "kevinhwang91/promise-async" },
+    config = function()
+      if not pcall(require, "ufo") then
+        vim.notify("nvim-ufo not installed", vim.log.levels.WARN)
+        return
+      end
+      local ufo = require("ufo")
+      ufo.setup({
+        provider_selector = function() return { "treesitter", "indent" } end,
+        fold_virt_text_handler = function(virt_text, lnum, end_lnum, width, truncate)
+          local new_text = {}
+          local suffix = (" ... %d lines ..."):format(end_lnum - lnum)
+          local suf_width = vim.fn.strdisplaywidth(suffix)
+          local target_width = width - suf_width
+          local cur_width = 0
+
+          local text = vim.api.nvim_buf_get_lines(0, lnum - 1, lnum, false)[1]
+          if not text then return virt_text end
+
+          local highlights = {}
+          for i = 1, #text do highlights[i] = "UfoFoldedFg" end
+
+          local ok, parser = pcall(vim.treesitter.get_parser, 0)
+          if ok and parser then
+            local query = vim.treesitter.query.get(parser:lang(), "highlights")
+            if query then
+              local tree = parser:parse()[1]
+              local root = tree:root()
+              for id, node, _ in query:iter_captures(root, 0, lnum - 1, lnum) do
+                local capture_name = query.captures[id]
+                local _, start_col, _, end_col = node:range()
+                for i = start_col + 1, end_col do
+                  highlights[i] = "@" .. capture_name
+                end
+              end
+            end
+          end
+
+          local current_hl = highlights[1] or "UfoFoldedFg"
+          local current_start = 1
+          for i = 2, #text + 1 do
+            if i > #text or highlights[i] ~= current_hl then
+              local chunk_text = text:sub(current_start, i - 1)
+              local chunk_width = vim.fn.strdisplaywidth(chunk_text)
+              
+              if target_width > cur_width + chunk_width then
+                table.insert(new_text, { chunk_text, current_hl })
+                cur_width = cur_width + chunk_width
+              else
+                chunk_text = truncate(chunk_text, target_width - cur_width)
+                table.insert(new_text, { chunk_text, current_hl })
+                cur_width = cur_width + vim.fn.strdisplaywidth(chunk_text)
+                break
+              end
+              current_hl = highlights[i]
+              current_start = i
+            end
+          end
+
+          table.insert(new_text, { suffix, "FoldedInfo" })
+          cur_width = cur_width + suf_width
+
+          if cur_width < width then
+            local padding = width - cur_width
+            table.insert(new_text, { string.rep(".", padding), "UfoFoldedFg" })
+          end
+
+          return new_text
+        end,
+      })
+    end,
+  },
+})
+
+vim.opt.foldtext = ""
+
+---
+--- HIGHLIGHTING & LSP FIXES
+---
+
+local function apply_go_highlights()
+  -- 1. Background and Folds
+  vim.api.nvim_set_hl(0, "Normal", { bg = "#2e2f31" })
+
+  -- Clear FG/BG from Folded so syntax shows through
+  vim.api.nvim_set_hl(0, "Folded", { fg = "none", bg = "none" })
+
+  -- 2. Define Colors
+  local orange = "#cc7832"
+  local public_method = "#e2c543"
+  local type_builtin = "#e2a069"
+  local type_custom = "#657a47"
+  local variable = "#96b1ac"
+  local string_col = "#5f7c5e"
+  local package_color = "#a49779"
+  local gray = "#928a79"
+  local modul = "#928a79"
+  local private_method = "#a09865" -- Muted Gold for private methods
+
+  -- 3. Helper function to set BOTH generic and specific groups
+  -- This ensures ufo finds the color regardless of which name it grabs
+  local function set_color(group_name, color)
+    vim.api.nvim_set_hl(0, group_name, { fg = color })
+    vim.api.nvim_set_hl(0, group_name .. ".go", { fg = color }) -- Add .go version
+  end
+
+  -- Fold Suffix & Dots
+  set_color("FoldedInfo", gray)
+  set_color("UfoFoldedFg", gray)
+
+  -- Keywords
+  set_color("@keyword", orange)
+  set_color("@conditional", orange)
+  set_color("@repeat", orange)
+  set_color("@keyword.function", orange)
+  set_color("@keyword.type", orange)
+
+
+  -- Functions/Methods
+  set_color("@function", public_method)
+  set_color("@method", public_method)
+  set_color("@function.call", public_method)
+
+  -- Types
+  set_color("@type.builtin", orange)
+  set_color("@type", type_custom)
+
+  -- Variables/Strings
+  set_color("@variable", variable)
+  set_color("@variable.parameter", variable)
+  set_color("@string", string_col)
+
+  -- Modules/Packages (Gray)
+  set_color("@module", modul)
+  set_color("@namespace", modul)
+
+  -- Builtin Functions (Gold)
+  set_color("@function.builtin", public_method)
+  set_color("@function.call", public_method)
+  set_color("@method.call", public_method)
+  set_color("@function.method.call", public_method)
+
+  -- Private Functions/Methods (Muted Gold)
+  set_color("@function.private", private_method)
+  set_color("@method.private", private_method)
+  set_color("@function.call.private", private_method)
+  set_color("@method.call.private", private_method)
+
+  -- Constants / Fields (Gold)
+  set_color("@constant", public_method)
+  set_color("@variable.member", public_method)
+
+  -- Builtin Constants (Orange)
+  set_color("@constant.builtin", orange)
+
+  -- LSP Semantic Tokens (The Real Fix)
+  -- Packages/Namespaces -> Gray (e.g. fmt, reflect, ion)
+  set_color("@lsp.type.namespace", gray)
+  
+  -- Enum Members (e.g. reflect.Interface) -> Gold
+  set_color("@lsp.type.enumMember", public_method)
+  set_color("@lsp.type.enum", public_method)
+  
+  -- Functions/Methods -> Gold (e.g. Println, Elem, Kind)
+  set_color("@lsp.type.function", public_method)
+  set_color("@lsp.type.method", public_method)
+
+  -- Variables -> Variable Color (e.g. s, ctx)
+  set_color("@lsp.type.variable", variable)
+  set_color("@lsp.type.parameter", variable)
+
+  -- Properties/Fields -> Gold (e.g. Value in reflect.Value)
+  set_color("@lsp.type.property", public_method)
+
+  -- Types -> Green/Orange (e.g. Interface, Int)
+  set_color("@lsp.type.type", type_custom)
+  set_color("@lsp.type.class", type_custom)
+  set_color("@lsp.type.interface", public_method) -- reflect.Interface is often an interface type
+
+  -- 4. Syntax and Treesitter
+  vim.cmd("syntax on")
+  vim.treesitter.stop(0)
+  vim.treesitter.start(0, "go")
+end
+
+-- 1. Setup gopls
+-- vim.lsp.enable("gopls")
+
+-- 2. DISABLE LSP Semantic Tokens so Treesitter colors work
+-- vim.api.nvim_create_autocmd("LspAttach", {
+--   callback = function(args)
+--     local client = vim.lsp.get_client_by_id(args.data.client_id)
+--     if client and client.name == "gopls" then
+--       client.server_capabilities.semanticTokensProvider = nil
+--     end
+--   end,
+-- })
+
+-- 3. Apply highlights on file open and colorscheme change
+vim.api.nvim_create_autocmd({ "FileType", "ColorScheme", "BufEnter" }, {
+  pattern = "go",
+  callback = apply_go_highlights,
+})
+
+-- Fold all in Go files
+vim.api.nvim_create_autocmd("FileType", {
+  pattern = "go",
+  callback = function()
+    vim.cmd("normal zM")
+  end,
+})
+
+vim.keymap.set("n", "qq", ":q!<CR>")
+vim.keymap.set("n", "sq", ":wq<CR>")
+vim.keymap.set("n", "J", "10j")
+vim.keymap.set("n", "K", "10k")
+vim.keymap.set("n", "ff", "zA")
