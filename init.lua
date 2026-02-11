@@ -12,15 +12,22 @@ end
 
 lazy.setup({
   {
-    "nvim-neo-tree/neo-tree.nvim",
-    branch = "v3.x",
-    dependencies = { "nvim-lua/plenary.nvim", "nvim-tree/nvim-web-devicons", "MunifTanjim/nui.nvim" },
+    "nvim-tree/nvim-tree.lua",
+    dependencies = { "nvim-tree/nvim-web-devicons" },
     config = function()
-      if not pcall(require, "neo-tree") then
-        vim.notify("neo-tree not installed", vim.log.levels.WARN)
+      local ok, nvim_tree = pcall(require, "nvim-tree")
+      if not ok then
+        vim.notify("nvim-tree not installed", vim.log.levels.WARN)
         return
       end
-      require("neo-tree").setup({})
+      nvim_tree.setup({
+        disable_netrw = true,
+        hijack_netrw = true,
+        view = { width = 32 },
+        renderer = { group_empty = true },
+        filters = { dotfiles = false },
+        git = { enable = true },
+      })
     end,
   },
   {
@@ -39,10 +46,47 @@ lazy.setup({
     end,
   },
   {
+    "nvim-telescope/telescope.nvim",
+    dependencies = { "nvim-lua/plenary.nvim" },
+    config = function()
+      local ok, telescope = pcall(require, "telescope")
+      if not ok then
+        vim.notify("telescope not installed", vim.log.levels.WARN)
+        return
+      end
+      telescope.setup({
+        defaults = {
+          previewer = false,
+          layout_config = {
+            height = 12,
+            width = 0.7,
+            prompt_position = "top",
+          },
+          sorting_strategy = "ascending",
+        },
+      })
+    end,
+  },
+  {
     "neovim/nvim-lspconfig",
     config = function()
-      -- Enable gopls with default settings
-      vim.lsp.config.gopls = {}
+      local gopls_path = vim.fn.exepath("gopls")
+      local gopls_cmd = gopls_path ~= "" and gopls_path or "gopls"
+
+      vim.lsp.config.gopls = {
+        cmd = { gopls_cmd },
+        filetypes = { "go", "gomod", "gowork", "gotmpl" },
+        settings = {
+          gopls = {
+            semanticTokens = true,
+          },
+        },
+      }
+
+      if gopls_path == "" then
+        vim.notify("gopls not found on PATH; install it to enable Go LSP", vim.log.levels.WARN)
+      end
+
       vim.lsp.enable("gopls")
     end,
   },
@@ -130,7 +174,7 @@ vim.opt.foldtext = ""
 
 local function apply_go_highlights()
   -- 1. Background and Folds
-  vim.api.nvim_set_hl(0, "Normal", { bg = "#2e2f31" })
+  vim.api.nvim_set_hl(0, "Normal", { bg = "#2b2b2b" })
 
   -- Clear FG/BG from Folded so syntax shows through
   vim.api.nvim_set_hl(0, "Folded", { fg = "none", bg = "none" })
@@ -140,12 +184,12 @@ local function apply_go_highlights()
   local public_method = "#e2c543"
   local type_builtin = "#e2a069"
   local type_custom = "#657a47"
-  local variable = "#96b1ac"
+  local variable = "#6483A5"
+  local unexported_variable = "#A76969"
   local string_col = "#5f7c5e"
   local package_color = "#a49779"
   local gray = "#928a79"
-  local modul = "#928a79"
-  local private_method = "#a09865" -- Muted Gold for private methods
+  local private_method = "#89703F" -- Unexported functions/methods
 
   -- 3. Helper function to set BOTH generic and specific groups
   -- This ensures ufo finds the color regardless of which name it grabs
@@ -170,6 +214,9 @@ local function apply_go_highlights()
   set_color("@function", public_method)
   set_color("@method", public_method)
   set_color("@function.call", public_method)
+  set_color("@function.call.go", public_method)
+  set_color("@method.call.go", public_method)
+  set_color("@constructor.go", public_method)
 
   -- Types
   set_color("@type.builtin", orange)
@@ -179,10 +226,11 @@ local function apply_go_highlights()
   set_color("@variable", variable)
   set_color("@variable.parameter", variable)
   set_color("@string", string_col)
-
+  set_color("@property.go", unexported_variable)
+  set_color("@variable.member.go", unexported_variable)
   -- Modules/Packages (Gray)
-  set_color("@module", modul)
-  set_color("@namespace", modul)
+  set_color("@module", package_color)
+  set_color("@namespace", package_color)
 
   -- Builtin Functions (Gold)
   set_color("@function.builtin", public_method)
@@ -195,17 +243,18 @@ local function apply_go_highlights()
   set_color("@method.private", private_method)
   set_color("@function.call.private", private_method)
   set_color("@method.call.private", private_method)
+  set_color("@constructor.private", private_method)
+  set_color("@constructor.call.private", private_method)
 
   -- Constants / Fields (Gold)
   set_color("@constant", public_method)
-  set_color("@variable.member", public_method)
 
   -- Builtin Constants (Orange)
   set_color("@constant.builtin", orange)
 
   -- LSP Semantic Tokens (The Real Fix)
   -- Packages/Namespaces -> Gray (e.g. fmt, reflect, ion)
-  set_color("@lsp.type.namespace", gray)
+  set_color("@lsp.type.namespace", package_color)
   
   -- Enum Members (e.g. reflect.Interface) -> Gold
   set_color("@lsp.type.enumMember", public_method)
@@ -214,6 +263,7 @@ local function apply_go_highlights()
   -- Functions/Methods -> Gold (e.g. Println, Elem, Kind)
   set_color("@lsp.type.function", public_method)
   set_color("@lsp.type.method", public_method)
+  set_color("@lsp.mod.exported", public_method)
 
   -- Variables -> Variable Color (e.g. s, ctx)
   set_color("@lsp.type.variable", variable)
@@ -232,6 +282,24 @@ local function apply_go_highlights()
   vim.treesitter.stop(0)
   vim.treesitter.start(0, "go")
 end
+
+vim.api.nvim_create_autocmd("LspAttach", {
+  callback = function(args)
+    if not args.data or not args.data.client_id then return end
+    local client = vim.lsp.get_client_by_id(args.data.client_id)
+    if not client or not client.server_capabilities.semanticTokensProvider then return end
+
+    if vim.lsp.semantic_tokens and vim.lsp.semantic_tokens.start then
+      vim.lsp.semantic_tokens.start(args.buf, client.id)
+    elseif vim.lsp.semantic_tokens and vim.lsp.semantic_tokens.enable then
+      vim.lsp.semantic_tokens.enable(args.buf, client.id)
+    end
+
+    if vim.lsp.semantic_tokens and vim.lsp.semantic_tokens.force_refresh then
+      vim.lsp.semantic_tokens.force_refresh(args.buf)
+    end
+  end,
+})
 
 -- 1. Setup gopls
 -- vim.lsp.enable("gopls")
@@ -265,3 +333,42 @@ vim.keymap.set("n", "sq", ":wq<CR>")
 vim.keymap.set("n", "J", "10j")
 vim.keymap.set("n", "K", "10k")
 vim.keymap.set("n", "ff", "zA")
+vim.keymap.set("n", "ft", ":NvimTreeToggle<CR>")
+-- vim.keymap.set("n", "<D-k>", ":NvimTreeToggle<CR>")
+local function toggle_telescope(prompt_fn)
+  for _, win in ipairs(vim.api.nvim_list_wins()) do
+    local buf = vim.api.nvim_win_get_buf(win)
+    if vim.bo[buf].filetype == "TelescopePrompt" then
+      vim.api.nvim_win_close(win, true)
+      return
+    end
+  end
+
+  local ok, builtin = pcall(require, "telescope.builtin")
+  if not ok then
+    vim.notify("telescope not installed", vim.log.levels.WARN)
+    return
+  end
+  prompt_fn(builtin)
+end
+
+vim.keymap.set("n", "<D-o>", function()
+  toggle_telescope(function(builtin) builtin.find_files() end)
+end)
+
+vim.keymap.set("n", "<D-k>", function()
+  local has_gopls = false
+  for _, client in ipairs(vim.lsp.get_clients()) do
+    if client.name == "gopls" then
+      has_gopls = true
+      break
+    end
+  end
+
+  if not has_gopls then
+    vim.notify("gopls is not attached; open a Go file first", vim.log.levels.WARN)
+    return
+  end
+
+  toggle_telescope(function(builtin) builtin.lsp_dynamic_workspace_symbols() end)
+end)
