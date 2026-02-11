@@ -56,11 +56,13 @@ lazy.setup({
       end
       telescope.setup({
         defaults = {
-          previewer = false,
+          previewer = true,
+          layout_strategy = "vertical",
           layout_config = {
-            height = 12,
+            height = 0,
             width = 0.7,
             prompt_position = "top",
+            preview_height = 0,
           },
           sorting_strategy = "ascending",
         },
@@ -335,6 +337,46 @@ vim.keymap.set("n", "K", "10k")
 vim.keymap.set("n", "ff", "zA")
 vim.keymap.set("n", "ft", ":NvimTreeToggle<CR>")
 -- vim.keymap.set("n", "<D-k>", ":NvimTreeToggle<CR>")
+local function toggle_telescope_preview_on_prompt(prompt_bufnr)
+  local ok, action_state = pcall(require, "telescope.actions.state")
+  if not ok then
+    return
+  end
+
+  local picker = action_state.get_current_picker(prompt_bufnr)
+  if not picker or not picker.all_previewers or picker.all_previewers == false then
+    return
+  end
+
+  local prompt = action_state.get_current_line()
+  local is_empty = vim.trim(prompt or "") == ""
+
+  if is_empty and picker.previewer then
+    picker.hidden_previewer = picker.previewer
+    picker.previewer = nil
+    picker:full_layout_update()
+  elseif (not is_empty) and (not picker.previewer) and picker.hidden_previewer then
+    picker.previewer = picker.hidden_previewer
+    picker.hidden_previewer = nil
+    picker:full_layout_update()
+  end
+end
+
+vim.api.nvim_create_autocmd("FileType", {
+  pattern = "TelescopePrompt",
+  callback = function(args)
+    local prompt_bufnr = args.buf
+
+    toggle_telescope_preview_on_prompt(prompt_bufnr)
+
+    vim.api.nvim_create_autocmd({ "TextChangedI", "TextChanged" }, {
+      buffer = prompt_bufnr,
+      callback = function()
+        toggle_telescope_preview_on_prompt(prompt_bufnr)
+      end,
+    })
+  end,
+})
 local function toggle_telescope(prompt_fn)
   for _, win in ipairs(vim.api.nvim_list_wins()) do
     local buf = vim.api.nvim_win_get_buf(win)
@@ -351,6 +393,50 @@ local function toggle_telescope(prompt_fn)
   end
   prompt_fn(builtin)
 end
+
+local function lsp_symbol_entry_maker()
+  local make_entry = require("telescope.make_entry")
+  local entry_display = require("telescope.pickers.entry_display")
+  local displayer = entry_display.create({
+    separator = "  ",
+    items = {
+      { width = 50 },
+      { remaining = true },
+    },
+  })
+
+  local function read_symbol_line(filename, lnum, fallback)
+    if not filename or filename == "" or not lnum or lnum < 1 then
+      return fallback or ""
+    end
+
+    local ok, lines = pcall(vim.fn.readfile, filename, "", lnum)
+    if not ok or not lines or not lines[lnum] then
+      return fallback or ""
+    end
+
+    local line = lines[lnum]
+    line = line:gsub("%s+", " ")
+    return vim.trim(line)
+  end
+
+  local base_entry_maker = make_entry.gen_from_lsp_symbols({})
+
+  return function(entry)
+    local e = base_entry_maker(entry)
+    local filename = e.filename or e.path or ""
+    local line = read_symbol_line(filename, e.lnum, e.text)
+    local file_display = filename ~= "" and vim.fn.fnamemodify(filename, ":.") or ""
+
+    e.display = function()
+      return displayer({ line, file_display })
+    end
+
+    return e
+  end
+end
+
+
 
 vim.keymap.set("n", "<D-o>", function()
   toggle_telescope(function(builtin) builtin.find_files() end)
@@ -370,5 +456,21 @@ vim.keymap.set("n", "<D-k>", function()
     return
   end
 
-  toggle_telescope(function(builtin) builtin.lsp_dynamic_workspace_symbols() end)
+  toggle_telescope(function(builtin)
+    builtin.lsp_dynamic_workspace_symbols({
+      prompt_title = "What's up",
+      -- results_limit = 10,
+      previewer = true,
+      layout_strategy = "vertical",
+      layout_config = {
+        prompt_position = "top",
+        mirror = true,
+        height = 0.5,
+        preview_height = 0.5,
+      },
+      sorting_strategy = "ascending",
+      preview_cutoff = 0,
+      entry_maker = lsp_symbol_entry_maker(),
+    })
+  end)
 end)
