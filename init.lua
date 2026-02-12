@@ -166,7 +166,35 @@ lazy.setup({
       })
     end,
   },
+  {
+    "lewis6991/gitsigns.nvim",
+    dependencies = { "nvim-lua/plenary.nvim" },
+    config = function()
+      local ok, gitsigns = pcall(require, "gitsigns")
+      if not ok then
+        vim.notify("gitsigns not installed", vim.log.levels.WARN)
+        return
+      end
+
+      vim.api.nvim_set_hl(0, "GitSignsAdd", { fg = "#6A9955" })
+      vim.api.nvim_set_hl(0, "GitSignsChange", { fg = "#D7BA7D" })
+      vim.api.nvim_set_hl(0, "GitSignsDelete", { fg = "#F44747" })
+
+      gitsigns.setup({
+        signs = {
+          add = { text = "+" },
+          change = { text = "~" },
+          delete = { text = "_" },
+          topdelete = { text = "_" },
+          changedelete = { text = "~" },
+        },
+        signcolumn = true,
+      })
+    end,
+  },
 })
+
+vim.opt.signcolumn = "yes"
 
 vim.opt.foldtext = ""
 
