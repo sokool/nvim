@@ -107,7 +107,64 @@ lazy.setup({
           local new_text = {}
           local suffix = (" ... %d lines ..."):format(end_lnum - lnum)
           local suf_width = vim.fn.strdisplaywidth(suffix)
-          local target_width = width - suf_width
+
+          local git_chunks = {}
+          local git_width = 0
+
+          local ok_gitsigns, gitsigns = pcall(require, "gitsigns")
+          if ok_gitsigns and gitsigns and gitsigns.get_hunks then
+            local ok_hunks, hunks = pcall(gitsigns.get_hunks, 0)
+            if ok_hunks and hunks then
+              local counts = { add = 0, change = 0, delete = 0 }
+
+              local function range_overlaps(start_line, line_count)
+                if not start_line or start_line < 1 then
+                  return false
+                end
+                local count = math.max(line_count or 0, 1)
+                local end_line = start_line + count - 1
+                return start_line <= end_lnum and end_line >= lnum
+              end
+
+              for _, hunk in ipairs(hunks) do
+                local overlaps = false
+                if hunk.added then
+                  overlaps = overlaps or range_overlaps(hunk.added.start, hunk.added.count)
+                end
+                if hunk.removed then
+                  overlaps = overlaps or range_overlaps(hunk.removed.start, hunk.removed.count)
+                end
+
+                if overlaps then
+                  if hunk.type == "add" then
+                    counts.add = counts.add + 1
+                  elseif hunk.type == "change" then
+                    counts.change = counts.change + 1
+                  elseif hunk.type == "delete" then
+                    counts.delete = counts.delete + 1
+                  end
+                end
+              end
+
+              if counts.add > 0 then
+                local text = (" +%d"):format(counts.add)
+                table.insert(git_chunks, { text, "GitSignsAdd" })
+                git_width = git_width + vim.fn.strdisplaywidth(text)
+              end
+              if counts.change > 0 then
+                local text = (" ~%d"):format(counts.change)
+                table.insert(git_chunks, { text, "GitSignsChange" })
+                git_width = git_width + vim.fn.strdisplaywidth(text)
+              end
+              if counts.delete > 0 then
+                local text = (" -%d"):format(counts.delete)
+                table.insert(git_chunks, { text, "GitSignsDelete" })
+                git_width = git_width + vim.fn.strdisplaywidth(text)
+              end
+            end
+          end
+
+          local target_width = math.max(width - suf_width - git_width, 0)
           local cur_width = 0
 
           local text = vim.api.nvim_buf_get_lines(0, lnum - 1, lnum, false)[1]
@@ -155,6 +212,10 @@ lazy.setup({
 
           table.insert(new_text, { suffix, "FoldedInfo" })
           cur_width = cur_width + suf_width
+          for _, chunk in ipairs(git_chunks) do
+            table.insert(new_text, chunk)
+            cur_width = cur_width + vim.fn.strdisplaywidth(chunk[1])
+          end
 
           if cur_width < width then
             local padding = width - cur_width
@@ -195,6 +256,10 @@ lazy.setup({
 })
 
 vim.opt.signcolumn = "yes"
+vim.opt.expandtab = true
+vim.opt.tabstop = 4
+vim.opt.softtabstop = 4
+vim.opt.shiftwidth = 4
 
 vim.opt.foldtext = ""
 
@@ -358,8 +423,17 @@ vim.api.nvim_create_autocmd("FileType", {
   end,
 })
 
+vim.api.nvim_create_autocmd("InsertLeave", {
+  pattern = "*.go",
+  callback = function()
+    vim.cmd("normal! zv")
+  end,
+})
+
 vim.keymap.set("n", "qq", ":q!<CR>")
 vim.keymap.set("n", "sq", ":wq<CR>")
+vim.keymap.set({ "n", "x", "o" }, "H", "b")
+vim.keymap.set({ "n", "x", "o" }, "L", "w")
 vim.keymap.set("n", "J", "10j")
 vim.keymap.set("n", "K", "10k")
 vim.keymap.set("n", "ff", "zA")
